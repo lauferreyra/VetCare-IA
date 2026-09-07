@@ -2,8 +2,9 @@ from fastapi import FastAPI
 from langchain_ollama import ChatOllama
 
 from app.config import settings
-from app.prompts import chat_prompt
+from app.prompts import chat_prompt, intent_prompt
 from app.schemas import ChatRequest
+from app.ai_models import ChatIntent
 
 app = FastAPI()
 
@@ -13,6 +14,9 @@ llm = ChatOllama(
 
 chain = chat_prompt | llm
 
+structured_llm = llm.with_structured_output(ChatIntent)
+
+structured_chain = intent_prompt | structured_llm
 
 @app.get("/health")
 def health_check():
@@ -30,3 +34,14 @@ def chat(request: ChatRequest):
     return {
         "message": response.content
     }
+
+
+@app.post("/chat/intent")
+def chat_intent(request: ChatRequest):
+    result = structured_chain.invoke(
+        {
+            "question": request.message,
+        }
+    )
+
+    return result.model_dump()
