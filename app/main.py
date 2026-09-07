@@ -7,6 +7,7 @@ from app.schemas import ChatRequest
 from app.ai_models import ChatIntent
 from app.tools import get_available_appointments
 from langchain_core.messages import ToolMessage
+from app.agent import run_agent
 
 app = FastAPI()
 
@@ -77,4 +78,10 @@ def chat_tool(request: ChatRequest):
 
     return {
         "message": final_response.content
+    }
+
+@app.post("/agent")
+def chat_agent(request: ChatRequest):
+    return {
+        "message": run_agent(request.message)
     }
