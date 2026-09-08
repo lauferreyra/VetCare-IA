@@ -4,16 +4,10 @@ from langchain_core.tools import tool
 @tool
 def get_available_appointments(date: str) -> str:
     """
-    Consulta los turnos disponibles para una fecha determinada.
+    Consulta los turnos disponibles para una fecha.
     """
 
     appointments = {
-        "mañana": [
-            "10:00",
-            "11:30",
-            "15:00",
-            "16:30",
-        ],
         "2026-09-08": [
             "10:00",
             "11:30",
