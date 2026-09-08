@@ -10,7 +10,9 @@ llm = ChatOllama(
     model=settings.llm_model,
 )
 
-llm_with_tools = llm.bind_tools(all_tools)
+llm_with_tools = llm.bind_tools(
+    all_tools,
+)
 
 
 def call_agent(state):
@@ -25,7 +27,10 @@ def call_agent(state):
                 f"La fecha actual es {current_date}. "
                 "Ayudá al usuario utilizando las "
                 "herramientas disponibles. "
-                "No inventes información."
+                "No inventes información. "
+                "Cuando el usuario utilice fechas relativas "
+                "como hoy o mañana, calculá la fecha usando "
+                "la fecha actual."
             ),
         },
         *state["messages"],
@@ -36,5 +41,7 @@ def call_agent(state):
     )
 
     return {
-        "messages": [response],
+        "messages": [
+            response
+        ],
     }

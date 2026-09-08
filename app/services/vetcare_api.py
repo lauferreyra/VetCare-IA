@@ -5,80 +5,77 @@ from app.config import settings
 
 class VetCareApiService:
 
-    def __init__(self):
+    def __init__(self, access_token: str):
         self.base_url = settings.vetcare_api_url
+        self.access_token = access_token
 
-    async def get_pets(self):
-        async with httpx.AsyncClient() as client:
+    def _headers(self):
+        return {
+            "Authorization": f"Bearer {self.access_token}",
+        }
 
-            response = await client.get(
-                f"{self.base_url}/pets"
+    def get_pets(self):
+        with httpx.Client() as client:
+            response = client.get(
+                f"{self.base_url}/pets",
+                headers=self._headers(),
             )
 
             response.raise_for_status()
 
             return response.json()
 
-    async def get_appointments(self):
-        async with httpx.AsyncClient() as client:
-
-            response = await client.get(
-                f"{self.base_url}/appointments"
+    def get_appointments(self):
+        with httpx.Client() as client:
+            response = client.get(
+                f"{self.base_url}/appointments",
+                headers=self._headers(),
             )
 
             response.raise_for_status()
 
             return response.json()
 
-    async def get_available_appointments(
+    def get_available_appointments(
         self,
         date: str,
     ):
-
-        async with httpx.AsyncClient() as client:
-
-            response = await client.get(
-                f"{self.base_url}/appointments/available",
+        with httpx.Client() as client:
+            response = client.get(
+                f"{self.base_url}/appointments/availability",
                 params={
                     "date": date,
                 },
+                headers=self._headers(),
             )
 
             response.raise_for_status()
 
             return response.json()
 
-    async def create_appointment(
+    def create_appointment(
         self,
-        pet_id: str,
-        date: str,
-        time: str,
+        data: dict,
     ):
-
-        async with httpx.AsyncClient() as client:
-
-            response = await client.post(
+        with httpx.Client() as client:
+            response = client.post(
                 f"{self.base_url}/appointments",
-                json={
-                    "petId": pet_id,
-                    "date": date,
-                    "time": time,
-                },
+                json=data,
+                headers=self._headers(),
             )
 
             response.raise_for_status()
 
             return response.json()
 
-    async def cancel_appointment(
+    def cancel_appointment(
         self,
-        appointment_id: str,
+        appointment_id: int,
     ):
-
-        async with httpx.AsyncClient() as client:
-
-            response = await client.delete(
-                f"{self.base_url}/appointments/{appointment_id}"
+        with httpx.Client() as client:
+            response = client.patch(
+                f"{self.base_url}/appointments/{appointment_id}/cancel",
+                headers=self._headers(),
             )
 
             response.raise_for_status()

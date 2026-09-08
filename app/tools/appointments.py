@@ -1,27 +1,45 @@
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+
+from app.services.vetcare_api import VetCareApiService
 
 
 @tool
-def get_available_appointments(date: str) -> str:
+def get_my_appointments(
+    config: RunnableConfig,
+) -> str:
+    """
+    Obtiene los turnos del usuario autenticado.
+    """
+
+    access_token = config["configurable"]["access_token"]
+
+    api = VetCareApiService(
+        access_token=access_token,
+    )
+
+    appointments = api.get_appointments()
+
+    return str(appointments)
+
+
+@tool
+def get_available_appointments(
+    date: str,
+    config: RunnableConfig,
+) -> str:
     """
     Consulta los turnos disponibles para una fecha.
     """
 
-    appointments = {
-        "2026-09-08": [
-            "10:00",
-            "11:30",
-            "15:00",
-            "16:30",
-        ],
-    }
+    access_token = config["configurable"]["access_token"]
 
-    available = appointments.get(date)
-
-    if not available:
-        return f"No hay turnos disponibles para {date}."
-
-    return (
-        f"Turnos disponibles para {date}: "
-        + ", ".join(available)
+    api = VetCareApiService(
+        access_token=access_token,
     )
+
+    appointments = api.get_available_appointments(
+        date=date,
+    )
+
+    return str(appointments)

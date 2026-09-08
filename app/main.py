@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException
 
 from app.graph.graph import graph
 from app.schemas import ChatRequest, ChatResponse
@@ -12,6 +12,7 @@ app = FastAPI(
 
 @app.get("/health")
 def health():
+
     return {
         "status": "ok",
     }
@@ -21,11 +22,35 @@ def health():
     "/chat",
     response_model=ChatResponse,
 )
-def chat(request: ChatRequest):
+def chat(
+    request: ChatRequest,
+    authorization: str | None = Header(
+        default=None,
+    ),
+):
+
+    if not authorization:
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization header is required",
+        )
+
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Authorization header",
+        )
+
+    access_token = authorization.replace(
+        "Bearer ",
+        "",
+        1,
+    )
 
     config = {
         "configurable": {
             "thread_id": request.thread_id,
+            "access_token": access_token,
         }
     }
 
