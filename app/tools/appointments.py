@@ -29,7 +29,7 @@ def get_available_appointments(
     config: RunnableConfig,
 ) -> str:
     """
-    Consulta los turnos disponibles para una fecha.
+    Consulta los horarios disponibles para una fecha.
     """
 
     access_token = config["configurable"]["access_token"]
@@ -43,3 +43,54 @@ def get_available_appointments(
     )
 
     return str(appointments)
+
+
+@tool
+def create_appointment(
+    reason: str,
+    pet_id: int,
+    slot_id: int,
+    config: RunnableConfig,
+) -> str:
+    """
+    Crea un turno para una mascota del usuario
+    utilizando un horario disponible.
+    """
+
+    access_token = config["configurable"]["access_token"]
+
+    api = VetCareApiService(
+        access_token=access_token,
+    )
+
+    appointment = api.create_appointment(
+        {
+            "reason": reason,
+            "petId": pet_id,
+            "slotId": slot_id,
+        }
+    )
+
+    return str(appointment)
+
+
+@tool
+def cancel_appointment(
+    appointment_id: int,
+    config: RunnableConfig,
+) -> str:
+    """
+    Cancela un turno del usuario.
+    """
+
+    access_token = config["configurable"]["access_token"]
+
+    api = VetCareApiService(
+        access_token=access_token,
+    )
+
+    appointment = api.cancel_appointment(
+        appointment_id,
+    )
+
+    return str(appointment)

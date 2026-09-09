@@ -10,7 +10,6 @@ from app.tools import all_tools
 
 builder = StateGraph(VetCareState)
 
-
 builder.add_node(
     "agent",
     call_agent,
@@ -21,12 +20,10 @@ builder.add_node(
     ToolNode(all_tools),
 )
 
-
 builder.add_edge(
     START,
     "agent",
 )
-
 
 builder.add_conditional_edges(
     "agent",
@@ -37,7 +34,6 @@ builder.add_conditional_edges(
     },
 )
 
-
 builder.add_edge(
     "tools",
     "agent",
@@ -45,7 +41,6 @@ builder.add_edge(
 
 
 checkpointer = InMemorySaver()
-
 
 graph = builder.compile(
     checkpointer=checkpointer,

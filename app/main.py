@@ -12,7 +12,6 @@ app = FastAPI(
 
 @app.get("/health")
 def health():
-
     return {
         "status": "ok",
     }
@@ -24,11 +23,8 @@ def health():
 )
 def chat(
     request: ChatRequest,
-    authorization: str | None = Header(
-        default=None,
-    ),
+    authorization: str | None = Header(default=None),
 ):
-
     if not authorization:
         raise HTTPException(
             status_code=401,
@@ -67,6 +63,8 @@ def chat(
             "pet_id": None,
             "pet_name": None,
             "date": None,
+            "slot_id": None,
+            "reason": None,
             "appointment_id": None,
             "response": None,
         },
