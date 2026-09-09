@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Header, HTTPException
+from langgraph.types import Command
 
 from app.graph.graph import graph
 from app.schemas import ChatRequest, ChatResponse
@@ -25,13 +26,22 @@ def chat(
     request: ChatRequest,
     authorization: str | None = Header(default=None),
 ):
+
+    # --------------------------------------------------
+    # VALIDATE AUTHORIZATION
+    # --------------------------------------------------
+
     if not authorization:
+
         raise HTTPException(
             status_code=401,
             detail="Authorization header is required",
         )
 
-    if not authorization.startswith("Bearer "):
+    if not authorization.startswith(
+        "Bearer "
+    ):
+
         raise HTTPException(
             status_code=401,
             detail="Invalid Authorization header",
@@ -43,6 +53,10 @@ def chat(
         1,
     )
 
+    # --------------------------------------------------
+    # LANGGRAPH CONFIG
+    # --------------------------------------------------
+
     config = {
         "configurable": {
             "thread_id": request.thread_id,
@@ -50,30 +64,115 @@ def chat(
         }
     }
 
-    result = graph.invoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": request.message,
-                }
-            ],
-            "user_id": None,
-            "intent": None,
-            "pet_id": None,
-            "pet_name": None,
-            "date": None,
-            "slot_id": None,
-            "reason": None,
-            "appointment_id": None,
-            "response": None,
-        },
-        config,
+    # --------------------------------------------------
+    # RESUME INTERRUPT
+    # --------------------------------------------------
+
+    if request.resume:
+
+        result = graph.invoke(
+            Command(
+                resume=True,
+            ),
+            config,
+        )
+
+    # --------------------------------------------------
+    # NEW / CONTINUING MESSAGE
+    # --------------------------------------------------
+
+    else:
+
+        result = graph.invoke(
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": request.message or "",
+                    }
+                ],
+            },
+            config,
+        )
+
+    # --------------------------------------------------
+    # INTERRUPT
+    # --------------------------------------------------
+
+    if "__interrupt__" in result:
+
+        interrupt_data = result[
+            "__interrupt__"
+        ][0].value
+
+        return {
+            "response": interrupt_data.get(
+                "message",
+                "Necesito tu confirmación para continuar.",
+            ),
+            "thread_id": request.thread_id,
+            "status": "waiting_approval",
+            "approval": interrupt_data,
+        }
+
+    # --------------------------------------------------
+    # RESPONSE FROM CURRENT GRAPH EXECUTION
+    # --------------------------------------------------
+
+    response = result.get(
+        "response"
     )
 
-    final_message = result["messages"][-1]
+    if response:
+
+        return {
+            "response": response,
+            "thread_id": request.thread_id,
+            "status": "completed",
+            "approval": None,
+        }
+
+    # --------------------------------------------------
+    # FALLBACK TO LAST MESSAGE
+    # --------------------------------------------------
+
+    messages = result.get(
+        "messages",
+        [],
+    )
+
+    if messages:
+
+        final_message = messages[-1]
+
+        if isinstance(
+            final_message,
+            dict,
+        ):
+
+            content = final_message.get(
+                "content",
+                "",
+            )
+
+        else:
+
+            content = final_message.content
+
+        return {
+            "response": content,
+            "thread_id": request.thread_id,
+            "status": "completed",
+            "approval": None,
+        }
+
+    # --------------------------------------------------
+    # EMPTY RESPONSE
+    # --------------------------------------------------
 
     return {
-        "response": final_message.content,
+        "response": "No pude generar una respuesta.",
         "thread_id": request.thread_id,
+        "status": "completed",
+        "approval": None,
     }
