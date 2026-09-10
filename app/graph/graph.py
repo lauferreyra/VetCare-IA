@@ -1,6 +1,9 @@
+from langchain_ollama import ChatOllama
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
+from langgraph.prebuilt import ToolNode
 
+from app.ai_models import ChatIntent
 from app.graph.booking import (
     confirm_booking,
     create_booking,
@@ -12,11 +15,135 @@ from app.graph.booking import (
     start_booking,
 )
 from app.graph.state import VetCareState
+from app.prompts import intent_prompt
+from app.tools.knowledge import search_veterinary_knowledge
 
 
-# --------------------------------------------------
-# ROUTER PRINCIPAL
-# --------------------------------------------------
+# ==================================================
+# MODELOS
+# ==================================================
+
+intent_llm = ChatOllama(
+    model="qwen3:8b",
+    temperature=0,
+)
+
+agent_llm = ChatOllama(
+    model="qwen3:8b",
+    temperature=0,
+)
+
+
+# ==================================================
+# TOOLS DEL AGENTE GENERAL
+# ==================================================
+
+knowledge_tools = [
+    search_veterinary_knowledge,
+]
+
+agent_llm_with_tools = agent_llm.bind_tools(
+    knowledge_tools,
+    tool_choice="required",
+)
+
+
+# ==================================================
+# INTENT
+# ==================================================
+
+
+def classify_intent(state):
+    """
+    Analiza el último mensaje del usuario y determina
+    la intención de la conversación.
+    """
+
+    messages = state.get(
+        "messages",
+        [],
+    )
+
+    if not messages:
+        return {
+            "intent": "GENERAL_CHAT",
+        }
+
+    last_message = messages[-1]
+
+    if isinstance(last_message, dict):
+        content = last_message.get(
+            "content",
+            "",
+        )
+    else:
+        content = last_message.content
+
+    chain = intent_prompt | intent_llm.with_structured_output(
+        ChatIntent
+    )
+
+    result = chain.invoke(
+        {
+            "question": content,
+        }
+    )
+
+    print("\n================ INTENT =================")
+
+    print(
+        "Message:",
+        content,
+    )
+
+    print(
+        "Intent:",
+        result.intent,
+    )
+
+    print("=========================================")
+
+    return {
+        "intent": result.intent,
+    }
+
+
+# ==================================================
+# ROUTER INICIAL
+# ==================================================
+
+
+def route_initial_intent(state):
+
+    intent = state.get(
+        "intent"
+    )
+
+    print("\n================ ROUTING =================")
+
+    print(
+        "Intent:",
+        intent,
+    )
+
+    if intent == "BOOK_APPOINTMENT":
+        print("→ booking")
+
+        return "booking"
+
+    if intent == "MEDICAL_QUERY":
+        print("→ knowledge_agent")
+
+        return "knowledge_agent"
+
+    print("→ knowledge_agent")
+
+    return "knowledge_agent"
+
+
+# ==================================================
+# ROUTER BOOKING
+# ==================================================
 
 
 def route_booking_stage(state):
@@ -25,7 +152,9 @@ def route_booking_stage(state):
         "booking_stage"
     )
 
-    print("\n================ ROUTING BOOKING ================")
+    print(
+        "\n================ ROUTING BOOKING ================"
+    )
 
     print(
         "booking_stage:",
@@ -49,7 +178,9 @@ def route_booking_stage(state):
 
     print(
         "available_slots:",
-        bool(state.get("available_slots")),
+        bool(
+            state.get("available_slots")
+        ),
     )
 
     print(
@@ -68,65 +199,67 @@ def route_booking_stage(state):
     )
 
     # ----------------------------------------------
-    # NEW BOOKING
+    # NUEVA RESERVA
     # ----------------------------------------------
 
     if not stage:
         print("→ start_booking")
+
         return "start_booking"
 
     # ----------------------------------------------
-    # DATE
+    # FECHA
     # ----------------------------------------------
 
     if stage == "select_date":
         print("→ process_date")
+
         return "process_date"
 
     # ----------------------------------------------
-    # AVAILABILITY
+    # DISPONIBILIDAD
     # ----------------------------------------------
 
     if stage == "load_availability":
         print("→ availability")
+
         return "availability"
 
     # ----------------------------------------------
-    # SLOT
+    # HORARIO
     # ----------------------------------------------
 
     if stage == "select_slot":
         print("→ select_slot")
+
         return "select_slot"
 
     # ----------------------------------------------
-    # REASON
+    # MOTIVO
     # ----------------------------------------------
 
     if stage == "select_reason":
         print("→ process_reason")
+
         return "process_reason"
 
     # ----------------------------------------------
-    # CONFIRMATION
+    # CONFIRMACIÓN
     # ----------------------------------------------
 
     if stage == "confirm":
         print("→ confirm")
-        return "confirm"
 
-    # ----------------------------------------------
-    # COMPLETED
-    # ----------------------------------------------
+        return "confirm"
 
     print("→ END")
 
     return END
 
 
-# --------------------------------------------------
-# ROUTER AFTER START
-# --------------------------------------------------
+# ==================================================
+# ROUTERS BOOKING
+# ==================================================
 
 
 def route_after_start(state):
@@ -141,11 +274,6 @@ def route_after_start(state):
     return END
 
 
-# --------------------------------------------------
-# ROUTER AFTER DATE
-# --------------------------------------------------
-
-
 def route_after_date(state):
 
     if state.get(
@@ -155,11 +283,6 @@ def route_after_date(state):
         return "availability"
 
     return END
-
-
-# --------------------------------------------------
-# ROUTER AFTER REASON
-# --------------------------------------------------
 
 
 def route_after_reason(state):
@@ -173,11 +296,6 @@ def route_after_reason(state):
     return END
 
 
-# --------------------------------------------------
-# ROUTER AFTER CONFIRMATION
-# --------------------------------------------------
-
-
 def route_after_confirmation(state):
 
     if state.get(
@@ -189,9 +307,112 @@ def route_after_confirmation(state):
     return END
 
 
-# --------------------------------------------------
+# ==================================================
+# KNOWLEDGE AGENT
+# ==================================================
+
+
+def knowledge_agent(state):
+    """
+    Agente que puede utilizar la tool de RAG.
+    """
+
+    messages = state.get(
+        "messages",
+        [],
+    )
+
+    system_message = {
+        "role": "system",
+        "content": """
+Sos el asistente virtual de VetCare.
+
+Podés utilizar la herramienta
+search_veterinary_knowledge para buscar información
+en la base de conocimiento veterinaria.
+
+Utilizá la herramienta cuando la pregunta requiera
+información veterinaria o información disponible
+en la base de conocimiento.
+
+Basá la respuesta final en la información recuperada.
+
+No inventes información.
+""",
+    }
+
+    response = agent_llm_with_tools.invoke(
+        [
+            system_message,
+            *messages,
+        ]
+    )
+
+    print(
+        "\n================ KNOWLEDGE AGENT ================"
+    )
+
+    print(
+        "Response:",
+        response,
+    )
+
+    print(
+        "Tool calls:",
+        getattr(
+            response,
+            "tool_calls",
+            [],
+        ),
+    )
+
+    print(
+        "=================================================="
+    )
+
+    return {
+        "messages": [
+            response,
+        ],
+    }
+
+
+# ==================================================
+# ROUTER KNOWLEDGE AGENT
+# ==================================================
+
+
+def route_after_knowledge_agent(state):
+
+    messages = state.get(
+        "messages",
+        [],
+    )
+
+    if not messages:
+        return END
+
+    last_message = messages[-1]
+
+    tool_calls = getattr(
+        last_message,
+        "tool_calls",
+        [],
+    )
+
+    if tool_calls:
+        print("→ knowledge_tools")
+
+        return "knowledge_tools"
+
+    print("→ END")
+
+    return END
+
+
+# ==================================================
 # GRAPH
-# --------------------------------------------------
+# ==================================================
 
 
 builder = StateGraph(
@@ -199,10 +420,15 @@ builder = StateGraph(
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # NODES
-# --------------------------------------------------
+# ==================================================
 
+
+builder.add_node(
+    "classify_intent",
+    classify_intent,
+)
 
 builder.add_node(
     "start_booking",
@@ -244,16 +470,41 @@ builder.add_node(
     create_booking,
 )
 
+builder.add_node(
+    "knowledge_agent",
+    knowledge_agent,
+)
 
-# --------------------------------------------------
+builder.add_node(
+    "knowledge_tools",
+    ToolNode(
+        knowledge_tools,
+    ),
+)
+
+
+# ==================================================
 # START
-# --------------------------------------------------
+# ==================================================
+
+
+def route_start(state):
+
+    # Si ya estamos dentro de un booking,
+    # continuar con el stage correspondiente.
+    if state.get("booking_stage"):
+        return route_booking_stage(state)
+
+    # Si es una conversación nueva,
+    # primero clasificamos la intención.
+    return "classify_intent"
 
 
 builder.add_conditional_edges(
     START,
-    route_booking_stage,
+    route_start,
     {
+        "classify_intent": "classify_intent",
         "start_booking": "start_booking",
         "process_date": "process_date",
         "availability": "availability",
@@ -265,9 +516,24 @@ builder.add_conditional_edges(
 )
 
 
-# --------------------------------------------------
+# ==================================================
+# INTENT
+# ==================================================
+
+
+builder.add_conditional_edges(
+    "classify_intent",
+    route_initial_intent,
+    {
+        "booking": "start_booking",
+        "knowledge_agent": "knowledge_agent",
+    },
+)
+
+
+# ==================================================
 # START BOOKING
-# --------------------------------------------------
+# ==================================================
 
 
 builder.add_conditional_edges(
@@ -280,9 +546,9 @@ builder.add_conditional_edges(
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # PROCESS DATE
-# --------------------------------------------------
+# ==================================================
 
 
 builder.add_conditional_edges(
@@ -295,9 +561,9 @@ builder.add_conditional_edges(
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # AVAILABILITY
-# --------------------------------------------------
+# ==================================================
 
 
 builder.add_edge(
@@ -311,9 +577,9 @@ builder.add_edge(
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # SELECT SLOT
-# --------------------------------------------------
+# ==================================================
 
 
 builder.add_edge(
@@ -322,9 +588,9 @@ builder.add_edge(
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # PROCESS REASON
-# --------------------------------------------------
+# ==================================================
 
 
 builder.add_conditional_edges(
@@ -337,9 +603,9 @@ builder.add_conditional_edges(
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # CONFIRM
-# --------------------------------------------------
+# ==================================================
 
 
 builder.add_conditional_edges(
@@ -352,9 +618,9 @@ builder.add_conditional_edges(
 )
 
 
-# --------------------------------------------------
+# ==================================================
 # CREATE
-# --------------------------------------------------
+# ==================================================
 
 
 builder.add_edge(
@@ -363,9 +629,35 @@ builder.add_edge(
 )
 
 
-# --------------------------------------------------
+# ==================================================
+# KNOWLEDGE AGENT
+# ==================================================
+
+
+builder.add_conditional_edges(
+    "knowledge_agent",
+    route_after_knowledge_agent,
+    {
+        "knowledge_tools": "knowledge_tools",
+        END: END,
+    },
+)
+
+
+# ==================================================
+# KNOWLEDGE TOOLS
+# ==================================================
+
+
+builder.add_edge(
+    "knowledge_tools",
+    "knowledge_agent",
+)
+
+
+# ==================================================
 # CHECKPOINT
-# --------------------------------------------------
+# ==================================================
 
 
 checkpointer = InMemorySaver()

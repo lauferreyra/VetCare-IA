@@ -4,6 +4,7 @@ from app.tools.appointments import (
     get_available_appointments,
     get_my_appointments,
 )
+from app.tools.knowledge import search_veterinary_knowledge
 from app.tools.pets import get_my_pets
 
 
@@ -11,12 +12,15 @@ read_tools = [
     get_available_appointments,
     get_my_appointments,
     get_my_pets,
+    search_veterinary_knowledge,
 ]
+
 
 write_tools = [
     create_appointment,
     cancel_appointment,
 ]
+
 
 all_tools = [
     *read_tools,

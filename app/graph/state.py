@@ -1,10 +1,14 @@
-from typing import TypedDict
+from typing import Annotated, TypedDict
 
 from langchain_core.messages import BaseMessage
+from langgraph.graph.message import add_messages
 
 
 class VetCareState(TypedDict):
-    messages: list[BaseMessage]
+    messages: Annotated[
+        list[BaseMessage],
+        add_messages,
+    ]
 
     user_id: str | None
     intent: str | None
