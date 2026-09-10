@@ -1,13 +1,36 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Header, HTTPException
 from langgraph.types import Command
 
-from app.graph.graph import graph
+import app.graph.graph as graph_module
+from app.mcp_client import access_token_context
 from app.schemas import ChatRequest, ChatResponse
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("\n========================================")
+    print("Initializing VetCare AI...")
+    print("========================================")
+
+    await graph_module.initialize_graph()
+
+    print("\n========================================")
+    print("VetCare AI initialized successfully.")
+    print("========================================")
+
+    yield
+
+    print("\n========================================")
+    print("Shutting down VetCare AI...")
+    print("========================================")
 
 
 app = FastAPI(
     title="VetCare AI",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 
@@ -22,26 +45,17 @@ def health():
     "/chat",
     response_model=ChatResponse,
 )
-def chat(
+async def chat(
     request: ChatRequest,
     authorization: str | None = Header(default=None),
 ):
-
-    # --------------------------------------------------
-    # VALIDATE AUTHORIZATION
-    # --------------------------------------------------
-
     if not authorization:
-
         raise HTTPException(
             status_code=401,
             detail="Authorization header is required",
         )
 
-    if not authorization.startswith(
-        "Bearer "
-    ):
-
+    if not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=401,
             detail="Invalid Authorization header",
@@ -53,126 +67,99 @@ def chat(
         1,
     )
 
-    # --------------------------------------------------
-    # LANGGRAPH CONFIG
-    # --------------------------------------------------
-
-    config = {
-        "configurable": {
-            "thread_id": request.thread_id,
-            "access_token": access_token,
-        }
-    }
-
-    # --------------------------------------------------
-    # RESUME INTERRUPT
-    # --------------------------------------------------
-
-    if request.resume:
-
-        result = graph.invoke(
-            Command(
-                resume=True,
-            ),
-            config,
+    if graph_module.graph is None:
+        raise HTTPException(
+            status_code=503,
+            detail="VetCare AI graph is not initialized",
         )
 
-    # --------------------------------------------------
-    # NEW / CONTINUING MESSAGE
-    # --------------------------------------------------
-
-    else:
-
-        result = graph.invoke(
-            {
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": request.message or "",
-                    }
-                ],
-            },
-            config,
-        )
-
-    # --------------------------------------------------
-    # INTERRUPT
-    # --------------------------------------------------
-
-    if "__interrupt__" in result:
-
-        interrupt_data = result[
-            "__interrupt__"
-        ][0].value
-
-        return {
-            "response": interrupt_data.get(
-                "message",
-                "Necesito tu confirmación para continuar.",
-            ),
-            "thread_id": request.thread_id,
-            "status": "waiting_approval",
-            "approval": interrupt_data,
-        }
-
-    # --------------------------------------------------
-    # RESPONSE FROM CURRENT GRAPH EXECUTION
-    # --------------------------------------------------
-
-    response = result.get(
-        "response"
+    token = access_token_context.set(
+        access_token
     )
 
-    if response:
-
-        return {
-            "response": response,
-            "thread_id": request.thread_id,
-            "status": "completed",
-            "approval": None,
+    try:
+        config = {
+            "configurable": {
+                "thread_id": request.thread_id,
+                "access_token": access_token,
+            }
         }
 
-    # --------------------------------------------------
-    # FALLBACK TO LAST MESSAGE
-    # --------------------------------------------------
-
-    messages = result.get(
-        "messages",
-        [],
-    )
-
-    if messages:
-
-        final_message = messages[-1]
-
-        if isinstance(
-            final_message,
-            dict,
-        ):
-
-            content = final_message.get(
-                "content",
-                "",
+        if request.resume:
+            result = await graph_module.graph.ainvoke(
+                Command(resume=True),
+                config,
+            )
+        else:
+            result = await graph_module.graph.ainvoke(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": request.message or "",
+                        }
+                    ],
+                },
+                config,
             )
 
-        else:
+        if "__interrupt__" in result:
+            interrupt_data = result[
+                "__interrupt__"
+            ][0].value
 
-            content = final_message.content
+            return {
+                "response": interrupt_data.get(
+                    "message",
+                    "Necesito tu confirmación para continuar.",
+                ),
+                "thread_id": request.thread_id,
+                "status": "waiting_approval",
+                "approval": interrupt_data,
+            }
+
+        response = result.get("response")
+
+        if response:
+            return {
+                "response": response,
+                "thread_id": request.thread_id,
+                "status": "completed",
+                "approval": None,
+            }
+
+        messages = result.get(
+            "messages",
+            [],
+        )
+
+        if messages:
+            final_message = messages[-1]
+
+            if isinstance(
+                final_message,
+                dict,
+            ):
+                content = final_message.get(
+                    "content",
+                    "",
+                )
+            else:
+                content = final_message.content
+
+            return {
+                "response": content,
+                "thread_id": request.thread_id,
+                "status": "completed",
+                "approval": None,
+            }
 
         return {
-            "response": content,
+            "response": "No pude generar una respuesta.",
             "thread_id": request.thread_id,
             "status": "completed",
             "approval": None,
         }
 
-    # --------------------------------------------------
-    # EMPTY RESPONSE
-    # --------------------------------------------------
-
-    return {
-        "response": "No pude generar una respuesta.",
-        "thread_id": request.thread_id,
-        "status": "completed",
-        "approval": None,
-    }
+    finally:
+        access_token_context.reset(token)

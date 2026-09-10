@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import date, timedelta
 
@@ -6,7 +7,7 @@ from langgraph.types import interrupt
 from pydantic import BaseModel
 
 from app.config import settings
-from app.services.vetcare_api import VetCareApiService
+from app.mcp_client import get_mcp_tools
 
 
 # --------------------------------------------------
@@ -27,14 +28,259 @@ llm = ChatOllama(
 
 
 # --------------------------------------------------
+# MCP HELPERS
+# --------------------------------------------------
+
+
+async def call_mcp_tool(
+    tool_name: str,
+    arguments: dict,
+):
+    """
+    Ejecuta una MCP tool y normaliza su respuesta.
+
+    MCP puede devolver el resultado como:
+
+        [
+            {
+                "type": "text",
+                "text": "{...JSON...}"
+            }
+        ]
+
+    Por eso convertimos el contenido nuevamente
+    a objetos Python.
+    """
+
+    tools = await get_mcp_tools()
+
+    tool = next(
+        (
+            tool
+            for tool in tools
+            if tool.name == tool_name
+        ),
+        None,
+    )
+
+    if tool is None:
+        raise RuntimeError(
+            f"MCP tool '{tool_name}' was not found."
+        )
+
+    print(
+        "\n================ MCP TOOL ================="
+    )
+
+    print(
+        "Tool:",
+        tool_name,
+    )
+
+    print(
+        "Arguments:",
+        arguments,
+    )
+
+    print(
+        "==========================================="
+    )
+
+    raw_result = await tool.ainvoke(
+        arguments
+    )
+
+    print(
+        "\n================ MCP RAW RESULT ==========="
+    )
+
+    print(
+        "Result:",
+        raw_result,
+    )
+
+    print(
+        "Result type:",
+        type(raw_result),
+    )
+
+    print(
+        "==========================================="
+    )
+
+    result = normalize_mcp_result(
+        raw_result
+    )
+
+    print(
+        "\n================ MCP NORMALIZED ============"
+    )
+
+    print(
+        "Result:",
+        result,
+    )
+
+    print(
+        "Result type:",
+        type(result),
+    )
+
+    print(
+        "==========================================="
+    )
+
+    return result
+
+
+# --------------------------------------------------
+# MCP RESULT NORMALIZATION
+# --------------------------------------------------
+
+
+def normalize_mcp_result(
+    result,
+):
+    """
+    Convierte respuestas MCP de texto/JSON
+    a objetos Python.
+
+    Ejemplo:
+
+        [
+            {
+                "type": "text",
+                "text": "{\"id\":1,\"name\":\"firu\"}"
+            }
+        ]
+
+    se convierte en:
+
+        {
+            "id": 1,
+            "name": "firu"
+        }
+
+    Si el resultado contiene múltiples bloques JSON,
+    se devuelve una lista.
+    """
+
+    # ----------------------------------------------
+    # RESULTADO DIRECTO
+    # ----------------------------------------------
+
+    if isinstance(
+        result,
+        dict,
+    ):
+        return result
+
+    # ----------------------------------------------
+    # LISTA
+    # ----------------------------------------------
+
+    if isinstance(
+        result,
+        list,
+    ):
+
+        normalized_items = []
+
+        for item in result:
+
+            # --------------------------------------
+            # MCP TEXT CONTENT
+            # --------------------------------------
+
+            if isinstance(
+                item,
+                dict,
+            ):
+
+                item_type = item.get(
+                    "type"
+                )
+
+                if item_type == "text":
+
+                    text = item.get(
+                        "text",
+                        "",
+                    )
+
+                    try:
+                        parsed = json.loads(
+                            text
+                        )
+
+                        normalized_items.append(
+                            parsed
+                        )
+
+                    except json.JSONDecodeError:
+
+                        normalized_items.append(
+                            text
+                        )
+
+                    continue
+
+            # --------------------------------------
+            # OBJETO NORMAL
+            # --------------------------------------
+
+            normalized_items.append(
+                item
+            )
+
+        # ------------------------------------------
+        # Si solamente tenemos un elemento,
+        # devolvemos ese elemento.
+        # ------------------------------------------
+
+        if len(
+            normalized_items
+        ) == 1:
+
+            return normalized_items[0]
+
+        return normalized_items
+
+    # ----------------------------------------------
+    # STRING
+    # ----------------------------------------------
+
+    if isinstance(
+        result,
+        str,
+    ):
+
+        try:
+            return json.loads(
+                result
+            )
+
+        except json.JSONDecodeError:
+            return result
+
+    return result
+
+
+# --------------------------------------------------
 # MESSAGE HELPER
 # --------------------------------------------------
 
 
-def get_last_message_content(state) -> str:
+def get_last_message_content(
+    state,
+) -> str:
+
     message = state["messages"][-1]
 
-    if isinstance(message, dict):
+    if isinstance(
+        message,
+        dict,
+    ):
         return message["content"]
 
     return message.content
@@ -46,29 +292,25 @@ def get_last_message_content(state) -> str:
 
 
 def extract_relative_date(message: str) -> str | None:
-    """
-    Convierte expresiones relativas simples a YYYY-MM-DD.
-
-    Importante:
-    las fechas relativas se procesan con Python
-    y no con el LLM.
-    """
 
     normalized = message.lower().strip()
 
     today = date.today()
 
+    if re.search(r"\bpasado mañana\b", normalized):
+        return (
+            today + timedelta(days=2)
+        ).isoformat()
+
+    if re.search(r"\bmañana\b", normalized):
+        return (
+            today + timedelta(days=1)
+        ).isoformat()
+
     if re.search(r"\bhoy\b", normalized):
         return today.isoformat()
 
-    if re.search(r"\bmañana\b", normalized):
-        return (today + timedelta(days=1)).isoformat()
-
-    if re.search(r"\bpasado mañana\b", normalized):
-        return (today + timedelta(days=2)).isoformat()
-
     return None
-
 
 # --------------------------------------------------
 # BOOKING DATA EXTRACTION
@@ -79,8 +321,10 @@ def extract_booking_data(
     message: str,
 ) -> BookingExtraction:
 
-    structured_llm = llm.with_structured_output(
-        BookingExtraction,
+    structured_llm = (
+        llm.with_structured_output(
+            BookingExtraction,
+        )
     )
 
     prompt = f"""
@@ -124,9 +368,13 @@ Mensaje del usuario:
 {message}
 """
 
-    extracted = structured_llm.invoke(prompt)
+    extracted = structured_llm.invoke(
+        prompt
+    )
 
-    relative_date = extract_relative_date(message)
+    relative_date = extract_relative_date(
+        message
+    )
 
     if relative_date:
         extracted.date = relative_date
@@ -139,53 +387,138 @@ Mensaje del usuario:
 # --------------------------------------------------
 
 
-def start_booking(state, config):
+async def start_booking(
+    state,
+    config,
+):
 
-    message = get_last_message_content(state)
-
-    extracted = extract_booking_data(message)
-
-    access_token = config["configurable"]["access_token"]
-
-    api = VetCareApiService(
-        access_token=access_token,
+    message = get_last_message_content(
+        state
     )
 
-    pets = api.get_pets()
+    extracted = extract_booking_data(
+        message
+    )
+
+    # ----------------------------------------------
+    # GET PETS THROUGH MCP
+    # ----------------------------------------------
+
+    pets_result = await call_mcp_tool(
+        "get_pets",
+        {},
+    )
+
+    pets = normalize_mcp_result(
+        pets_result
+    )
+
+    # Si MCP devuelve un único objeto,
+    # lo convertimos en lista.
+
+    if isinstance(
+        pets,
+        dict,
+    ):
+        pets = [pets]
+
+    if not isinstance(
+        pets,
+        list,
+    ):
+        raise ValueError(
+            "Unexpected pets response: "
+            f"{pets}"
+        )
+
+    print(
+        "\n================ PETS ================="
+    )
+
+    print(
+        "Pets:",
+        pets,
+    )
+
+    print(
+        "========================================"
+    )
+
+    # ----------------------------------------------
+    # NO PET SELECTED
+    # ----------------------------------------------
 
     if not extracted.pet_name:
+
         return {
             "response": (
-                "¿Para qué mascota querés sacar el turno?"
+                "¿Para qué mascota querés "
+                "sacar el turno?"
             ),
             "booking_stage": "select_pet",
         }
+
+    # ----------------------------------------------
+    # FIND PET
+    # ----------------------------------------------
+
+    requested_pet_name = (
+        extracted.pet_name
+        .strip()
+        .lower()
+    )
 
     pet = next(
         (
             pet
             for pet in pets
-            if pet["name"].lower()
-            == extracted.pet_name.lower()
+            if isinstance(
+                pet,
+                dict,
+            )
+            and isinstance(
+                pet.get("name"),
+                str,
+            )
+            and pet["name"]
+            .strip()
+            .lower()
+            == requested_pet_name
         ),
         None,
     )
 
+    # ----------------------------------------------
+    # PET NOT FOUND
+    # ----------------------------------------------
+
     if not pet:
 
         names = ", ".join(
-            pet["name"]
+            pet.get(
+                "name",
+                "Sin nombre",
+            )
             for pet in pets
+            if isinstance(
+                pet,
+                dict,
+            )
         )
 
         return {
             "response": (
                 f"No encontré una mascota llamada "
                 f"{extracted.pet_name}. "
-                f"Tus mascotas registradas son: {names}."
+                f"Tus mascotas registradas son: "
+                f"{names}."
             ),
             "booking_stage": "select_pet",
         }
+
+    # ----------------------------------------------
+    # PET FOUND
+    # ----------------------------------------------
 
     result = {
         "pet_id": pet["id"],
@@ -194,6 +527,19 @@ def start_booking(state, config):
         "reason": extracted.reason,
         "slot_time": extracted.slot_time,
     }
+
+    print(
+        "\n================ PET FOUND ================"
+    )
+
+    print(
+        "Pet:",
+        pet,
+    )
+
+    print(
+        "==========================================="
+    )
 
     # ----------------------------------------------
     # NO DATE
@@ -206,7 +552,9 @@ def start_booking(state, config):
             f"el turno para {pet['name']}?"
         )
 
-        result["booking_stage"] = "select_date"
+        result["booking_stage"] = (
+            "select_date"
+        )
 
         return result
 
@@ -214,7 +562,9 @@ def start_booking(state, config):
     # DATE EXISTS
     # ----------------------------------------------
 
-    result["booking_stage"] = "load_availability"
+    result["booking_stage"] = (
+        "load_availability"
+    )
 
     return result
 
@@ -224,12 +574,15 @@ def start_booking(state, config):
 # --------------------------------------------------
 
 
-def ask_booking_date(state):
+def ask_booking_date(
+    state,
+):
 
     return {
         "response": (
             f"¿Para qué fecha querés sacar "
-            f"el turno para {state['pet_name']}?"
+            f"el turno para "
+            f"{state['pet_name']}?"
         ),
         "booking_stage": "select_date",
     }
@@ -240,19 +593,26 @@ def ask_booking_date(state):
 # --------------------------------------------------
 
 
-def process_date(state):
+def process_date(
+    state,
+):
 
-    message = get_last_message_content(state)
+    message = get_last_message_content(
+        state
+    )
 
-    extracted = extract_booking_data(message)
+    extracted = extract_booking_data(
+        message
+    )
 
     if not extracted.date:
 
         return {
             "response": (
-                f"No pude identificar la fecha.\n\n"
+                "No pude identificar la fecha.\n\n"
                 f"¿Para qué fecha querés sacar "
-                f"el turno para {state['pet_name']}?"
+                f"el turno para "
+                f"{state['pet_name']}?"
             ),
             "booking_stage": "select_date",
         }
@@ -268,17 +628,26 @@ def process_date(state):
 # --------------------------------------------------
 
 
-def load_availability(state, config):
+async def load_availability(
+    state,
+    config,
+):
 
-    access_token = config["configurable"]["access_token"]
-
-    api = VetCareApiService(
-        access_token=access_token,
+    result = await call_mcp_tool(
+        "get_available_appointments",
+        {
+            "date": state["date"],
+        },
     )
 
-    result = api.get_available_appointments(
-        state["date"],
-    )
+    if not isinstance(
+        result,
+        dict,
+    ):
+        raise ValueError(
+            "Unexpected availability response: "
+            f"{result}"
+        )
 
     slots = result.get(
         "slots",
@@ -296,16 +665,24 @@ def load_availability(state, config):
 # --------------------------------------------------
 
 
-def show_availability(state):
+def show_availability(
+    state,
+):
 
-    slots = state.get(
-        "available_slots"
-    ) or []
+    slots = (
+        state.get(
+            "available_slots"
+        )
+        or []
+    )
 
     available_slots = [
         slot
         for slot in slots
-        if slot.get("available") is True
+        if slot.get(
+            "available"
+        )
+        is True
     ]
 
     if not available_slots:
@@ -340,13 +717,17 @@ def show_availability(state):
 # --------------------------------------------------
 
 
-def select_slot(state):
+def select_slot(
+    state,
+):
 
     message = get_last_message_content(
         state
     ).strip()
 
-    print("\n--- SELECT SLOT ---")
+    print(
+        "\n--- SELECT SLOT ---"
+    )
 
     print(
         "User message:",
@@ -355,11 +736,13 @@ def select_slot(state):
 
     print(
         "Available slots:",
-        state.get("available_slots"),
+        state.get(
+            "available_slots"
+        ),
     )
 
     # ----------------------------------------------
-    # EXTRACT TIME DIRECTLY WITH PYTHON
+    # EXTRACT TIME
     # ----------------------------------------------
 
     match = re.search(
@@ -372,13 +755,15 @@ def select_slot(state):
         return {
             "response": (
                 "No pude identificar el horario. "
-                "Por favor elegí uno de los horarios disponibles."
+                "Por favor elegí uno de los "
+                "horarios disponibles."
             ),
             "booking_stage": "select_slot",
         }
 
     requested_time = (
-        f"{int(match.group(1)):02d}:{match.group(2)}"
+        f"{int(match.group(1)):02d}:"
+        f"{match.group(2)}"
     )
 
     print(
@@ -386,16 +771,25 @@ def select_slot(state):
         requested_time,
     )
 
-    slots = state.get(
-        "available_slots"
-    ) or []
+    slots = (
+        state.get(
+            "available_slots"
+        )
+        or []
+    )
 
     selected = next(
         (
             slot
             for slot in slots
-            if slot.get("available") is True
-            and slot.get("time") == requested_time
+            if slot.get(
+                "available"
+            )
+            is True
+            and slot.get(
+                "time"
+            )
+            == requested_time
         ),
         None,
     )
@@ -409,14 +803,18 @@ def select_slot(state):
         available = ", ".join(
             slot["time"]
             for slot in slots
-            if slot.get("available") is True
+            if slot.get(
+                "available"
+            )
+            is True
         )
 
         return {
             "response": (
                 f"El horario {requested_time} "
                 f"no está disponible.\n\n"
-                f"Horarios disponibles: {available}"
+                f"Horarios disponibles: "
+                f"{available}"
             ),
             "booking_stage": "select_slot",
         }
@@ -435,7 +833,8 @@ def select_slot(state):
         "slot_time": selected["time"],
         "booking_stage": "select_reason",
         "response": (
-            f"Elegiste las {selected['time']} "
+            f"Elegiste las "
+            f"{selected['time']} "
             f"para {state['pet_name']}.\n\n"
             f"¿Cuál es el motivo de la consulta?"
         ),
@@ -445,7 +844,9 @@ def select_slot(state):
         "--- SELECT SLOT RESULT ---"
     )
 
-    print(result)
+    print(
+        result
+    )
 
     return result
 
@@ -455,7 +856,9 @@ def select_slot(state):
 # --------------------------------------------------
 
 
-def ask_reason(state):
+def ask_reason(
+    state,
+):
 
     return {
         "response": (
@@ -471,17 +874,18 @@ def ask_reason(state):
 # --------------------------------------------------
 
 
+# --------------------------------------------------
+# PROCESS REASON
+# --------------------------------------------------
+
+
 def process_reason(state):
 
     message = get_last_message_content(
         state
-    )
+    ).strip()
 
-    extracted = extract_booking_data(
-        message
-    )
-
-    if not extracted.reason:
+    if not message:
 
         return {
             "response": (
@@ -492,22 +896,25 @@ def process_reason(state):
         }
 
     return {
-        "reason": extracted.reason,
+        "reason": message,
         "booking_stage": "confirm",
     }
-
 
 # --------------------------------------------------
 # CONFIRM BOOKING
 # --------------------------------------------------
 
 
-def confirm_booking(state):
+def confirm_booking(
+    state,
+):
 
     confirmation = interrupt(
         {
             "type": "booking_confirmation",
-            "message": "¿Querés confirmar este turno?",
+            "message": (
+                "¿Querés confirmar este turno?"
+            ),
             "appointment": {
                 "pet_name": state["pet_name"],
                 "date": state["date"],
@@ -531,21 +938,28 @@ def confirm_booking(state):
 # --------------------------------------------------
 
 
-def create_booking(state, config):
+async def create_booking(
+    state,
+    config,
+):
 
-    access_token = config["configurable"]["access_token"]
-
-    api = VetCareApiService(
-        access_token=access_token,
-    )
-
-    appointment = api.create_appointment(
+    appointment = await call_mcp_tool(
+        "create_appointment",
         {
             "reason": state["reason"],
-            "petId": state["pet_id"],
-            "slotId": state["slot_id"],
-        }
+            "pet_id": state["pet_id"],
+            "slot_id": state["slot_id"],
+        },
     )
+
+    if not isinstance(
+        appointment,
+        dict,
+    ):
+        raise ValueError(
+            "Unexpected appointment response: "
+            f"{appointment}"
+        )
 
     return {
         "appointment_id": appointment["id"],
