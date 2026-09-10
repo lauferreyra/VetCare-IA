@@ -138,46 +138,17 @@ async def call_mcp_tool(
 # --------------------------------------------------
 
 
-def normalize_mcp_result(
-    result,
-):
+def normalize_mcp_result(result):
     """
     Convierte respuestas MCP de texto/JSON
     a objetos Python.
-
-    Ejemplo:
-
-        [
-            {
-                "type": "text",
-                "text": "{\"id\":1,\"name\":\"firu\"}"
-            }
-        ]
-
-    se convierte en:
-
-        {
-            "id": 1,
-            "name": "firu"
-        }
-
-    Si el resultado contiene múltiples bloques JSON,
-    se devuelve una lista.
     """
-
-    # ----------------------------------------------
-    # RESULTADO DIRECTO
-    # ----------------------------------------------
 
     if isinstance(
         result,
         dict,
     ):
         return result
-
-    # ----------------------------------------------
-    # LISTA
-    # ----------------------------------------------
 
     if isinstance(
         result,
@@ -187,10 +158,6 @@ def normalize_mcp_result(
         normalized_items = []
 
         for item in result:
-
-            # --------------------------------------
-            # MCP TEXT CONTENT
-            # --------------------------------------
 
             if isinstance(
                 item,
@@ -225,18 +192,9 @@ def normalize_mcp_result(
 
                     continue
 
-            # --------------------------------------
-            # OBJETO NORMAL
-            # --------------------------------------
-
             normalized_items.append(
                 item
             )
-
-        # ------------------------------------------
-        # Si solamente tenemos un elemento,
-        # devolvemos ese elemento.
-        # ------------------------------------------
 
         if len(
             normalized_items
@@ -245,10 +203,6 @@ def normalize_mcp_result(
             return normalized_items[0]
 
         return normalized_items
-
-    # ----------------------------------------------
-    # STRING
-    # ----------------------------------------------
 
     if isinstance(
         result,
@@ -287,30 +241,93 @@ def get_last_message_content(
 
 
 # --------------------------------------------------
+# AVAILABILITY QUERY DETECTION
+# --------------------------------------------------
+
+
+def is_availability_query(
+    message: str,
+) -> bool:
+    """
+    Determina si el usuario solamente quiere
+    consultar horarios disponibles.
+
+    No utiliza el LLM porque es una decisión
+    determinística del workflow.
+    """
+
+    normalized = (
+        message
+        .lower()
+        .strip()
+    )
+
+    availability_patterns = [
+        r"\bqué horarios\b",
+        r"\bque horarios\b",
+        r"\bqué horario\b",
+        r"\bque horario\b",
+        r"\bhorarios hay\b",
+        r"\bhorarios disponibles\b",
+        r"\bhorarios libre\b",
+        r"\bhorarios libres\b",
+        r"\bdisponibilidad\b",
+        r"\bqué turnos hay\b",
+        r"\bque turnos hay\b",
+        r"\bqué turnos tengo disponibles\b",
+        r"\bque turnos tengo disponibles\b",
+    ]
+
+    return any(
+        re.search(
+            pattern,
+            normalized,
+        )
+        for pattern in availability_patterns
+    )
+
+
+# --------------------------------------------------
 # DATE EXTRACTION
 # --------------------------------------------------
 
 
-def extract_relative_date(message: str) -> str | None:
+def extract_relative_date(
+    message: str,
+) -> str | None:
 
-    normalized = message.lower().strip()
+    normalized = (
+        message
+        .lower()
+        .strip()
+    )
 
     today = date.today()
 
-    if re.search(r"\bpasado mañana\b", normalized):
+    if re.search(
+        r"\bpasado mañana\b",
+        normalized,
+    ):
         return (
             today + timedelta(days=2)
         ).isoformat()
 
-    if re.search(r"\bmañana\b", normalized):
+    if re.search(
+        r"\bmañana\b",
+        normalized,
+    ):
         return (
             today + timedelta(days=1)
         ).isoformat()
 
-    if re.search(r"\bhoy\b", normalized):
+    if re.search(
+        r"\bhoy\b",
+        normalized,
+    ):
         return today.isoformat()
 
     return None
+
 
 # --------------------------------------------------
 # BOOKING DATA EXTRACTION
@@ -383,6 +400,169 @@ Mensaje del usuario:
 
 
 # --------------------------------------------------
+# START AVAILABILITY
+# --------------------------------------------------
+
+
+async def start_availability(
+    state,
+    config,
+):
+
+    message = get_last_message_content(
+        state
+    )
+
+    extracted = extract_booking_data(
+        message
+    )
+
+    # ----------------------------------------------
+    # DATE EXISTS
+    # ----------------------------------------------
+
+    if extracted.date:
+
+        return {
+            "date": extracted.date,
+            "booking_stage": "load_availability_only",
+        }
+
+    # ----------------------------------------------
+    # DATE DOES NOT EXIST
+    # ----------------------------------------------
+
+    return {
+        "response": (
+            "¿Para qué fecha querés consultar "
+            "los horarios disponibles?"
+        ),
+        "booking_stage": "select_availability_date",
+    }
+
+
+# --------------------------------------------------
+# PROCESS AVAILABILITY DATE
+# --------------------------------------------------
+
+
+def process_availability_date(
+    state,
+):
+
+    message = get_last_message_content(
+        state
+    )
+
+    extracted = extract_booking_data(
+        message
+    )
+
+    if not extracted.date:
+
+        return {
+            "response": (
+                "No pude identificar la fecha.\n\n"
+                "¿Para qué fecha querés consultar "
+                "los horarios disponibles?"
+            ),
+            "booking_stage": "select_availability_date",
+        }
+
+    return {
+        "date": extracted.date,
+        "booking_stage": "load_availability_only",
+    }
+
+
+# --------------------------------------------------
+# LOAD AVAILABILITY ONLY
+# --------------------------------------------------
+
+
+async def load_availability_only(
+    state,
+    config,
+):
+
+    result = await call_mcp_tool(
+        "get_available_appointments",
+        {
+            "date": state["date"],
+        },
+    )
+
+    if not isinstance(
+        result,
+        dict,
+    ):
+        raise ValueError(
+            "Unexpected availability response: "
+            f"{result}"
+        )
+
+    slots = result.get(
+        "slots",
+        [],
+    )
+
+    return {
+        "available_slots": slots,
+        "booking_stage": "show_availability_only",
+    }
+
+
+# --------------------------------------------------
+# SHOW AVAILABILITY ONLY
+# --------------------------------------------------
+
+
+def show_availability_only(
+    state,
+):
+
+    slots = (
+        state.get(
+            "available_slots"
+        )
+        or []
+    )
+
+    available_slots = [
+        slot
+        for slot in slots
+        if slot.get(
+            "available"
+        )
+        is True
+    ]
+
+    if not available_slots:
+
+        return {
+            "response": (
+                f"No encontré horarios disponibles "
+                f"para el {state['date']}."
+            ),
+            "booking_stage": "completed",
+        }
+
+    lines = [
+        f"- {slot['time']}"
+        for slot in available_slots
+    ]
+
+    return {
+        "response": (
+            f"Estos son los horarios disponibles "
+            f"para el {state['date']}:\n\n"
+            + "\n".join(lines)
+        ),
+        "booking_stage": "completed",
+    }
+
+
+# --------------------------------------------------
 # START BOOKING
 # --------------------------------------------------
 
@@ -412,9 +592,6 @@ async def start_booking(
     pets = normalize_mcp_result(
         pets_result
     )
-
-    # Si MCP devuelve un único objeto,
-    # lo convertimos en lista.
 
     if isinstance(
         pets,
@@ -741,10 +918,6 @@ def select_slot(
         ),
     )
 
-    # ----------------------------------------------
-    # EXTRACT TIME
-    # ----------------------------------------------
-
     match = re.search(
         r"\b([01]?\d|2[0-3]):([0-5]\d)\b",
         message,
@@ -784,19 +957,13 @@ def select_slot(
             for slot in slots
             if slot.get(
                 "available"
-            )
-            is True
+            ) is True
             and slot.get(
                 "time"
-            )
-            == requested_time
+            ) == requested_time
         ),
         None,
     )
-
-    # ----------------------------------------------
-    # INVALID SLOT
-    # ----------------------------------------------
 
     if not selected:
 
@@ -805,8 +972,7 @@ def select_slot(
             for slot in slots
             if slot.get(
                 "available"
-            )
-            is True
+            ) is True
         )
 
         return {
@@ -818,10 +984,6 @@ def select_slot(
             ),
             "booking_stage": "select_slot",
         }
-
-    # ----------------------------------------------
-    # VALID SLOT
-    # ----------------------------------------------
 
     print(
         "SELECTED SLOT:",
@@ -839,14 +1001,6 @@ def select_slot(
             f"¿Cuál es el motivo de la consulta?"
         ),
     }
-
-    print(
-        "--- SELECT SLOT RESULT ---"
-    )
-
-    print(
-        result
-    )
 
     return result
 
@@ -874,12 +1028,9 @@ def ask_reason(
 # --------------------------------------------------
 
 
-# --------------------------------------------------
-# PROCESS REASON
-# --------------------------------------------------
-
-
-def process_reason(state):
+def process_reason(
+    state,
+):
 
     message = get_last_message_content(
         state
@@ -899,6 +1050,7 @@ def process_reason(state):
         "reason": message,
         "booking_stage": "confirm",
     }
+
 
 # --------------------------------------------------
 # CONFIRM BOOKING

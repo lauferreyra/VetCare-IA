@@ -7,11 +7,16 @@ from app.ai_models import ChatIntent
 from app.graph.booking import (
     confirm_booking,
     create_booking,
+    is_availability_query,
     load_availability,
+    load_availability_only,
+    process_availability_date,
     process_date,
     process_reason,
     select_slot,
     show_availability,
+    show_availability_only,
+    start_availability,
     start_booking,
 )
 from app.graph.state import VetCareState
@@ -24,10 +29,12 @@ from app.tools.knowledge import search_veterinary_knowledge
 # MODELOS
 # ==================================================
 
+
 intent_llm = ChatOllama(
     model="qwen3:8b",
     temperature=0,
 )
+
 
 agent_llm = ChatOllama(
     model="qwen3:8b",
@@ -39,7 +46,9 @@ agent_llm = ChatOllama(
 # MCP TOOLS
 # ==================================================
 
+
 async def load_tools():
+
     mcp_tools = await get_mcp_tools()
 
     print(
@@ -63,6 +72,7 @@ async def load_tools():
 # KNOWLEDGE TOOLS
 # ==================================================
 
+
 knowledge_tools = [
     search_veterinary_knowledge,
 ]
@@ -72,13 +82,10 @@ knowledge_tools = [
 # GRAPH BUILDER
 # ==================================================
 
+
 async def build_graph():
 
     mcp_tools = await load_tools()
-
-    # ----------------------------------------------
-    # Todas las tools disponibles
-    # ----------------------------------------------
 
     agent_tools = [
         *mcp_tools,
@@ -91,7 +98,7 @@ async def build_graph():
     )
 
     # ----------------------------------------------
-    # Tool específica para GET_PETS
+    # GET PETS TOOL
     # ----------------------------------------------
 
     get_pets_tool = next(
@@ -119,33 +126,38 @@ async def build_graph():
 
     def classify_intent(state):
 
-        """
-        Analiza el último mensaje del usuario y determina
-        la intención de la conversación.
-        """
-
         messages = state.get(
             "messages",
             [],
         )
 
         if not messages:
+
             return {
                 "intent": "GENERAL_CHAT",
             }
 
         last_message = messages[-1]
 
-        if isinstance(last_message, dict):
+        if isinstance(
+            last_message,
+            dict,
+        ):
+
             content = last_message.get(
                 "content",
                 "",
             )
+
         else:
+
             content = last_message.content
 
-        chain = intent_prompt | intent_llm.with_structured_output(
-            ChatIntent
+        chain = (
+            intent_prompt
+            | intent_llm.with_structured_output(
+                ChatIntent
+            )
         )
 
         result = chain.invoke(
@@ -177,7 +189,7 @@ async def build_graph():
         }
 
     # ==================================================
-    # ROUTER INITIAL
+    # INITIAL ROUTER
     # ==================================================
 
     def route_initial_intent(state):
@@ -195,13 +207,68 @@ async def build_graph():
             intent,
         )
 
+        # ----------------------------------------------
+        # BOOKING
+        # ----------------------------------------------
+
         if intent == "BOOK_APPOINTMENT":
+
+            messages = state.get(
+                "messages",
+                [],
+            )
+
+            last_message = (
+                messages[-1]
+                if messages
+                else None
+            )
+
+            if isinstance(
+                last_message,
+                dict,
+            ):
+
+                content = last_message.get(
+                    "content",
+                    "",
+                )
+
+            else:
+
+                content = (
+                    last_message.content
+                    if last_message
+                    else ""
+                )
+
+            # ------------------------------------------
+            # AVAILABILITY QUERY
+            # ------------------------------------------
+
+            if is_availability_query(
+                content
+            ):
+
+                print(
+                    "→ availability_query"
+                )
+
+                return "availability_query"
+
+            # ------------------------------------------
+            # NORMAL BOOKING
+            # ------------------------------------------
 
             print(
                 "→ booking"
             )
 
             return "booking"
+
+        # ----------------------------------------------
+        # MEDICAL
+        # ----------------------------------------------
 
         if intent == "MEDICAL_QUERY":
 
@@ -273,13 +340,9 @@ async def build_graph():
             state.get("reason"),
         )
 
-        if not stage:
-
-            print(
-                "→ start_booking"
-            )
-
-            return "start_booking"
+        # ----------------------------------------------
+        # NORMAL BOOKING
+        # ----------------------------------------------
 
         if stage == "select_date":
 
@@ -321,11 +384,43 @@ async def build_graph():
 
             return "confirm"
 
+        # ----------------------------------------------
+        # AVAILABILITY ONLY
+        # ----------------------------------------------
+
+        if stage == "select_availability_date":
+
+            print(
+                "→ process_availability_date"
+            )
+
+            return "process_availability_date"
+
+        if stage == "load_availability_only":
+
+            print(
+                "→ availability_only"
+            )
+
+            return "availability_only"
+
+        if stage == "show_availability_only":
+
+            print(
+                "→ show_availability_only"
+            )
+
+            return "show_availability_only"
+
+        # ----------------------------------------------
+        # DEFAULT
+        # ----------------------------------------------
+
         print(
-            "→ END"
+            "→ start_booking"
         )
 
-        return END
+        return "start_booking"
 
     # ==================================================
     # BOOKING ROUTERS
@@ -338,6 +433,7 @@ async def build_graph():
         )
 
         if stage == "load_availability":
+
             return "availability"
 
         return END
@@ -345,9 +441,12 @@ async def build_graph():
     def route_after_date(state):
 
         if (
-            state.get("booking_stage")
+            state.get(
+                "booking_stage"
+            )
             == "load_availability"
         ):
+
             return "availability"
 
         return END
@@ -355,9 +454,12 @@ async def build_graph():
     def route_after_reason(state):
 
         if (
-            state.get("booking_stage")
+            state.get(
+                "booking_stage"
+            )
             == "confirm"
         ):
+
             return "confirm"
 
         return END
@@ -365,10 +467,45 @@ async def build_graph():
     def route_after_confirmation(state):
 
         if (
-            state.get("approval_status")
+            state.get(
+                "approval_status"
+            )
             == "approved"
         ):
+
             return "create"
+
+        return END
+
+    # ==================================================
+    # AVAILABILITY ROUTERS
+    # ==================================================
+
+    def route_after_availability_start(
+        state
+    ):
+
+        stage = state.get(
+            "booking_stage"
+        )
+
+        if stage == "load_availability_only":
+
+            return "availability_only"
+
+        return END
+
+    def route_after_availability_date(
+        state
+    ):
+
+        stage = state.get(
+            "booking_stage"
+        )
+
+        if stage == "load_availability_only":
+
+            return "availability_only"
 
         return END
 
@@ -378,22 +515,6 @@ async def build_graph():
 
     def knowledge_agent(state):
 
-        """
-        Agente general de VetCare.
-
-        Puede utilizar:
-
-        - MCP tools
-        - RAG knowledge tool
-
-        Para GET_PETS, la herramienta get_pets es obligatoria
-        en la primera ejecución.
-
-        Después de recibir el resultado de una tool, el LLM
-        responde sin volver a tener acceso a tools para evitar
-        loops.
-        """
-
         messages = state.get(
             "messages",
             [],
@@ -402,11 +523,6 @@ async def build_graph():
         intent = state.get(
             "intent"
         )
-
-        # ----------------------------------------------
-        # Detectar si acabamos de recibir el resultado
-        # de una tool.
-        # ----------------------------------------------
 
         last_message = (
             messages[-1]
@@ -423,10 +539,6 @@ async def build_graph():
             )
             == "tool"
         )
-
-        # ----------------------------------------------
-        # System prompt
-        # ----------------------------------------------
 
         system_message = {
             "role": "system",
@@ -456,9 +568,9 @@ No vuelvas a solicitar la misma información.
 """,
         }
 
-        # ==================================================
-        # RESPUESTA FINAL DESPUÉS DE TOOL
-        # ==================================================
+        # ----------------------------------------------
+        # FINAL RESPONSE AFTER TOOL
+        # ----------------------------------------------
 
         if is_tool_result:
 
@@ -502,9 +614,9 @@ No vuelvas a solicitar la misma información.
                 "response": response.content,
             }
 
-        # ==================================================
-        # GET_PETS
-        # ==================================================
+        # ----------------------------------------------
+        # GET PETS
+        # ----------------------------------------------
 
         if intent == "GET_PETS":
 
@@ -515,9 +627,9 @@ No vuelvas a solicitar la misma información.
                 ]
             )
 
-        # ==================================================
-        # RESTO DE INTENCIONES
-        # ==================================================
+        # ----------------------------------------------
+        # OTHER INTENTS
+        # ----------------------------------------------
 
         else:
 
@@ -557,7 +669,7 @@ No vuelvas a solicitar la misma información.
         }
 
     # ==================================================
-    # ROUTER KNOWLEDGE AGENT
+    # KNOWLEDGE ROUTER
     # ==================================================
 
     def route_after_knowledge_agent(state):
@@ -650,6 +762,30 @@ No vuelvas a solicitar la misma información.
     )
 
     # ==================================================
+    # AVAILABILITY ONLY NODES
+    # ==================================================
+
+    builder.add_node(
+        "start_availability",
+        start_availability,
+    )
+
+    builder.add_node(
+        "process_availability_date",
+        process_availability_date,
+    )
+
+    builder.add_node(
+        "availability_only",
+        load_availability_only,
+    )
+
+    builder.add_node(
+        "show_availability_only",
+        show_availability_only,
+    )
+
+    # ==================================================
     # AGENT NODES
     # ==================================================
 
@@ -671,16 +807,13 @@ No vuelvas a solicitar la misma información.
 
     def route_start(state):
 
-        # Si ya estamos dentro de un booking,
-        # continuar con el stage correspondiente.
-
-        if state.get("booking_stage"):
+        if state.get(
+            "booking_stage"
+        ):
 
             return route_booking_stage(
                 state
             )
-
-        # Conversación nueva.
 
         return "classify_intent"
 
@@ -695,6 +828,10 @@ No vuelvas a solicitar la misma información.
             "select_slot": "select_slot",
             "process_reason": "process_reason",
             "confirm": "confirm",
+            "start_availability": "start_availability",
+            "process_availability_date": "process_availability_date",
+            "availability_only": "availability_only",
+            "show_availability_only": "show_availability_only",
             END: END,
         },
     )
@@ -708,6 +845,7 @@ No vuelvas a solicitar la misma información.
         route_initial_intent,
         {
             "booking": "start_booking",
+            "availability_query": "start_availability",
             "knowledge_agent": "knowledge_agent",
         },
     )
@@ -797,7 +935,39 @@ No vuelvas a solicitar la misma información.
     )
 
     # ==================================================
-    # AGENT
+    # AVAILABILITY ONLY
+    # ==================================================
+
+    builder.add_conditional_edges(
+        "start_availability",
+        route_after_availability_start,
+        {
+            "availability_only": "availability_only",
+            END: END,
+        },
+    )
+
+    builder.add_conditional_edges(
+        "process_availability_date",
+        route_after_availability_date,
+        {
+            "availability_only": "availability_only",
+            END: END,
+        },
+    )
+
+    builder.add_edge(
+        "availability_only",
+        "show_availability_only",
+    )
+
+    builder.add_edge(
+        "show_availability_only",
+        END,
+    )
+
+    # ==================================================
+    # KNOWLEDGE AGENT
     # ==================================================
 
     builder.add_conditional_edges(
@@ -833,10 +1003,12 @@ No vuelvas a solicitar la misma información.
 # GRAPH INSTANCE
 # ==================================================
 
+
 graph = None
 
 
 async def initialize_graph():
+
     global graph
 
     graph = await build_graph()
