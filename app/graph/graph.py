@@ -807,13 +807,80 @@ No vuelvas a solicitar la misma información.
 
     def route_start(state):
 
+        messages = state.get(
+            "messages",
+            [],
+        )
+
+        if not messages:
+            return "classify_intent"
+
+        last_message = messages[-1]
+
+        if isinstance(
+            last_message,
+            dict,
+        ):
+            content = last_message.get(
+                "content",
+                "",
+            )
+        else:
+            content = last_message.content
+
+        print(
+            "\n================ START ROUTING ================="
+        )
+
+        print(
+            "Message:",
+            content,
+        )
+
+        print(
+            "Current booking_stage:",
+            state.get(
+                "booking_stage"
+            ),
+        )
+
+        # --------------------------------------------------
+        # NEW AVAILABILITY QUERY
+        # --------------------------------------------------
+
+        if is_availability_query(
+            content
+        ):
+
+            print(
+                "→ new availability query"
+            )
+
+            return "start_availability"
+
+        # --------------------------------------------------
+        # ACTIVE BOOKING
+        # --------------------------------------------------
+
         if state.get(
             "booking_stage"
         ):
 
+            print(
+                "→ continue booking"
+            )
+
             return route_booking_stage(
                 state
             )
+
+        # --------------------------------------------------
+        # NEW CONVERSATION
+        # --------------------------------------------------
+
+        print(
+            "→ classify intent"
+        )
 
         return "classify_intent"
 
